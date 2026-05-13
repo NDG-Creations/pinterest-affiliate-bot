@@ -1,36 +1,85 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Pinterest Affiliate Bot
+
+A clean starter project for a future Pinterest affiliate automation bot.
+
+This project currently includes only the foundation:
+
+- Next.js App Router
+- TypeScript
+- Prisma
+- PostgreSQL support via Prisma's PostgreSQL adapter
+- Product database model for future affiliate workflows
+- Environment variable example
+
+Pinterest API integration and product scraping are intentionally not included yet.
+
+## Requirements
+
+- Node.js 20 or newer
+- npm
+- PostgreSQL database
 
 ## Getting Started
 
-First, run the development server:
+Install dependencies:
+
+```bash
+npm install
+```
+
+Create your local environment file:
+
+```bash
+cp .env.example .env
+```
+
+Update `DATABASE_URL` in `.env` with your PostgreSQL connection string.
+
+## Database Setup
+
+The app uses PostgreSQL through Prisma. The main model is `Product`, with a `ProductStatus` enum for tracking whether a product is new, generated, published, or failed.
+
+Generate the Prisma client:
+
+```bash
+npm run prisma:generate
+```
+
+Create and apply the first database migration:
+
+```bash
+npm run prisma:migrate
+```
+
+This creates the database tables from `prisma/schema.prisma`.
+
+Start the development server:
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Prisma
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The Prisma schema lives at `prisma/schema.prisma`.
 
-## Learn More
+Useful commands:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm run prisma:generate
+npm run prisma:migrate
+npm run prisma:studio
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Project Structure
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+```text
+prisma/
+  schema.prisma
+src/
+  app/
+  lib/
+    prisma.ts
+```
