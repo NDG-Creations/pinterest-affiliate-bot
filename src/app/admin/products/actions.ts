@@ -30,10 +30,30 @@ export type GeneratePinImageState = {
   error?: string;
 };
 
+export type ProcessNextProductState = {
+  success?: string;
+  error?: string;
+};
+
+export type BulkImportProductsState = {
+  importedCount?: number;
+  skippedDuplicatesCount?: number;
+  failedRowsCount?: number;
+  error?: string;
+};
+
 type ProductPinInput = {
   id: string;
   productTitle: string;
   category: string | null;
+  source: string;
+  price: string | null;
+};
+
+type ProductPinImageInput = {
+  id: string;
+  productTitle: string;
+  productImageUrl: string | null;
   source: string;
   price: string | null;
 };
@@ -49,6 +69,76 @@ const getOptionalValue = (formData: FormData, key: string) => {
   const value = formData.get(key)?.toString().trim();
 
   return value ? value : null;
+};
+
+const detectProductSource = (value: string) => {
+  const normalized = value.toLowerCase();
+
+  if (normalized.includes("amazon")) {
+    return "Amazon";
+  }
+
+  if (normalized.includes("flipkart")) {
+    return "Flipkart";
+  }
+
+  if (normalized.includes("meesho")) {
+    return "Meesho";
+  }
+
+  if (normalized.includes("myntra")) {
+    return "Myntra";
+  }
+
+  if (normalized.includes("ajio")) {
+    return "Ajio";
+  }
+
+  return "Unknown";
+};
+
+const isValidUrl = (value: string) => {
+  try {
+    new URL(value);
+
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const parseBulkProductRow = (row: string) => {
+  const parts = row.split("|").map((part) => part.trim());
+
+  if (parts.length >= 3) {
+    const [source, productTitle, productUrl, price, category] = parts;
+
+    if (!productTitle || !productUrl || !isValidUrl(productUrl)) {
+      return null;
+    }
+
+    return {
+      source: source || detectProductSource(productUrl),
+      productTitle,
+      productUrl,
+      price: price || null,
+      category: category || null,
+    };
+  }
+
+  const productUrl = row.trim();
+
+  if (!isValidUrl(productUrl)) {
+    return null;
+  }
+
+  return {
+    source: detectProductSource(productUrl),
+    productTitle: productUrl,
+    productUrl,
+    price: null,
+    category: null,
+  };
 };
 
 export async function createProduct(
@@ -114,6 +204,77 @@ export async function createProduct(
       },
     };
   }
+}
+
+export async function bulkImportProducts(
+  _previousState: BulkImportProductsState,
+  formData: FormData,
+): Promise<BulkImportProductsState> {
+  const bulkInput = formData.get("bulkInput")?.toString() ?? "";
+  const rows = bulkInput
+    .split(/\r?\n/)
+    .map((row) => row.trim())
+    .filter(Boolean);
+
+  if (rows.length === 0) {
+    return { error: "Add at least one product row to import." };
+  }
+
+  let importedCount = 0;
+  let skippedDuplicatesCount = 0;
+  let failedRowsCount = 0;
+  const seenUrls = new Set<string>();
+
+  for (const row of rows) {
+    const parsed = parseBulkProductRow(row);
+
+    if (!parsed) {
+      failedRowsCount += 1;
+      continue;
+    }
+
+    if (seenUrls.has(parsed.productUrl)) {
+      skippedDuplicatesCount += 1;
+      continue;
+    }
+
+    seenUrls.add(parsed.productUrl);
+
+    try {
+      await prisma.product.create({
+        data: {
+          source: parsed.source,
+          productUrl: parsed.productUrl,
+          productTitle: parsed.productTitle,
+          price: parsed.price,
+          category: parsed.category,
+          status: ProductStatus.NEW,
+        },
+      });
+      importedCount += 1;
+    } catch (error) {
+      const message = getErrorMessage(error).toLowerCase();
+
+      if (
+        message.includes("unique") ||
+        message.includes("producturl") ||
+        message.includes("unique constraint")
+      ) {
+        skippedDuplicatesCount += 1;
+      } else {
+        console.error("Bulk import row failed:", error);
+        failedRowsCount += 1;
+      }
+    }
+  }
+
+  revalidatePath("/admin/products");
+
+  return {
+    importedCount,
+    skippedDuplicatesCount,
+    failedRowsCount,
+  };
 }
 
 const cleanGeneratedJson = (value: string) =>
@@ -325,6 +486,53 @@ const markProductGenerationFailed = async (productId: string) => {
   revalidatePath("/admin/products");
 };
 
+const generatePinTextForProduct = async (
+  product: ProductPinInput,
+): Promise<GeneratedPinText> => {
+  const provider = getAiProvider();
+
+  if (provider === "fallback") {
+    console.info("AI provider used: fallback");
+
+    return generateFallbackPinText(product);
+  }
+
+  if (provider === "gemini") {
+    try {
+      const generatedPinText = await generateGeminiPinText(product);
+
+      console.info("AI provider used: gemini");
+
+      return generatedPinText;
+    } catch (error) {
+      console.error("Gemini pin text generation failed:", error);
+
+      if (isQuotaOrRateLimitError(error)) {
+        console.info("AI provider used: fallback");
+        console.info("Fallback pin text generator used.");
+
+        return generateFallbackPinText(product);
+      }
+
+      throw new Error(`Gemini API request failed: ${getErrorMessage(error)}`);
+    }
+  }
+
+  try {
+    const generatedPinText = await generateOpenAiPinText(product);
+
+    console.info("AI provider used: openai");
+
+    return generatedPinText;
+  } catch (error) {
+    console.error("OpenAI pin text generation failed:", error);
+    console.info("AI provider used: fallback");
+    console.info("Fallback pin text generator used.");
+
+    return generateFallbackPinText(product);
+  }
+};
+
 const wrapCanvasText = (
   context: CanvasRenderingContext2D,
   text: string,
@@ -429,6 +637,100 @@ const drawProductImage = async (
   }
 };
 
+const generatePinImageForProduct = async (product: ProductPinImageInput) => {
+  const { createCanvas } = await import("canvas");
+  const width = 1000;
+  const height = 1500;
+  const canvas = createCanvas(width, height);
+  const context = canvas.getContext("2d");
+  const gradient = context.createLinearGradient(0, 0, width, height);
+
+  gradient.addColorStop(0, "#17151f");
+  gradient.addColorStop(0.45, "#3b1f4f");
+  gradient.addColorStop(1, "#0f172a");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, width, height);
+
+  context.save();
+  context.globalAlpha = 0.35;
+  context.fillStyle = "#ff6fb1";
+  context.beginPath();
+  context.ellipse(790, 190, 310, 190, -0.35, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = "#38bdf8";
+  context.beginPath();
+  context.ellipse(130, 960, 260, 420, 0.45, 0, Math.PI * 2);
+  context.fill();
+  context.fillStyle = "#facc15";
+  context.beginPath();
+  context.ellipse(780, 1180, 210, 160, 0.2, 0, Math.PI * 2);
+  context.fill();
+  context.restore();
+
+  context.strokeStyle = "rgba(255, 255, 255, 0.16)";
+  context.lineWidth = 4;
+  for (let index = -3; index < 8; index += 1) {
+    context.beginPath();
+    context.moveTo(index * 180, 0);
+    context.lineTo(index * 180 + 760, height);
+    context.stroke();
+  }
+
+  const hasProductImage = product.productImageUrl
+    ? await drawProductImage(context, product.productImageUrl)
+    : false;
+
+  if (!hasProductImage) {
+    context.save();
+    drawRoundedRect(context, 120, 470, 760, 560, 42);
+    context.fillStyle = "rgba(255, 255, 255, 0.12)";
+    context.fill();
+    context.strokeStyle = "rgba(255, 255, 255, 0.28)";
+    context.lineWidth = 3;
+    context.stroke();
+    context.fillStyle = "rgba(255, 255, 255, 0.86)";
+    context.font = "700 54px Arial";
+    context.textAlign = "center";
+    drawWrappedText(context, product.productTitle, width / 2, 710, 620, 66, 4);
+    context.restore();
+  }
+
+  context.textAlign = "left";
+  context.fillStyle = "#ffffff";
+  context.font = "700 76px Arial";
+  drawWrappedText(context, product.productTitle, 90, 150, 820, 88, 4);
+
+  context.fillStyle = "rgba(255, 255, 255, 0.78)";
+  context.font = "600 34px Arial";
+  context.fillText(product.source, 90, 1100);
+
+  if (product.price) {
+    context.fillStyle = "#ffffff";
+    context.font = "700 58px Arial";
+    context.fillText(product.price, 90, 1170);
+  }
+
+  drawRoundedRect(context, 90, 1260, 360, 112, 56);
+  context.fillStyle = "#ffffff";
+  context.fill();
+  context.fillStyle = "#15151f";
+  context.font = "700 42px Arial";
+  context.textAlign = "center";
+  context.fillText("Shop Now", 270, 1330);
+
+  const outputDirectory = path.join(process.cwd(), "public", "generated-pins");
+  const fileName = `${product.id}-${Date.now()}-${randomUUID()}.png`;
+  const publicPath = `/generated-pins/${fileName}`;
+
+  await mkdir(outputDirectory, { recursive: true });
+  await writeFile(
+    path.join(outputDirectory, fileName),
+    canvas.toBuffer("image/png"),
+  );
+
+  return publicPath;
+};
+
 export async function generatePinText(
   _previousState: GeneratePinTextState,
   formData: FormData,
@@ -454,60 +756,17 @@ export async function generatePinText(
     return { error: "Product not found." };
   }
 
-  const provider = getAiProvider();
-
-  if (provider === "fallback") {
-    const fallbackPinText = generateFallbackPinText(product);
-
-    console.info("AI provider used: fallback");
-    await saveGeneratedPinText(product.id, fallbackPinText);
-
-    return { success: "Pin text generated with fallback." };
-  }
-
-  if (provider === "gemini") {
-    try {
-      const generatedPinText = await generateGeminiPinText(product);
-
-      console.info("AI provider used: gemini");
-      await saveGeneratedPinText(product.id, generatedPinText);
-
-      return { success: "Pin text generated." };
-    } catch (error) {
-      console.error("Gemini pin text generation failed:", error);
-
-      if (isQuotaOrRateLimitError(error)) {
-        const fallbackPinText = generateFallbackPinText(product);
-
-        console.info("AI provider used: fallback");
-        console.info("Fallback pin text generator used.");
-        await saveGeneratedPinText(product.id, fallbackPinText);
-
-        return { success: "Pin text generated with fallback." };
-      }
-
-      await markProductGenerationFailed(product.id);
-
-      return { error: `Gemini API request failed: ${getErrorMessage(error)}` };
-    }
-  }
-
   try {
-    const generatedPinText = await generateOpenAiPinText(product);
+    const generatedPinText = await generatePinTextForProduct(product);
 
-    console.info("AI provider used: openai");
     await saveGeneratedPinText(product.id, generatedPinText);
 
     return { success: "Pin text generated." };
   } catch (error) {
-    const fallbackPinText = generateFallbackPinText(product);
+    console.error("Pin text generation failed:", error);
+    await markProductGenerationFailed(product.id);
 
-    console.error("OpenAI pin text generation failed:", error);
-    console.info("AI provider used: fallback");
-    console.info("Fallback pin text generator used.");
-    await saveGeneratedPinText(product.id, fallbackPinText);
-
-    return { success: "Pin text generated with fallback." };
+    return { error: getErrorMessage(error) };
   }
 }
 
@@ -537,107 +796,7 @@ export async function generatePinImage(
   }
 
   try {
-    const { createCanvas } = await import("canvas");
-    const width = 1000;
-    const height = 1500;
-    const canvas = createCanvas(width, height);
-    const context = canvas.getContext("2d");
-    const gradient = context.createLinearGradient(0, 0, width, height);
-
-    gradient.addColorStop(0, "#17151f");
-    gradient.addColorStop(0.45, "#3b1f4f");
-    gradient.addColorStop(1, "#0f172a");
-    context.fillStyle = gradient;
-    context.fillRect(0, 0, width, height);
-
-    context.save();
-    context.globalAlpha = 0.35;
-    context.fillStyle = "#ff6fb1";
-    context.beginPath();
-    context.ellipse(790, 190, 310, 190, -0.35, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = "#38bdf8";
-    context.beginPath();
-    context.ellipse(130, 960, 260, 420, 0.45, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = "#facc15";
-    context.beginPath();
-    context.ellipse(780, 1180, 210, 160, 0.2, 0, Math.PI * 2);
-    context.fill();
-    context.restore();
-
-    context.strokeStyle = "rgba(255, 255, 255, 0.16)";
-    context.lineWidth = 4;
-    for (let index = -3; index < 8; index += 1) {
-      context.beginPath();
-      context.moveTo(index * 180, 0);
-      context.lineTo(index * 180 + 760, height);
-      context.stroke();
-    }
-
-    const hasProductImage = product.productImageUrl
-      ? await drawProductImage(context, product.productImageUrl)
-      : false;
-
-    if (!hasProductImage) {
-      context.save();
-      drawRoundedRect(context, 120, 470, 760, 560, 42);
-      context.fillStyle = "rgba(255, 255, 255, 0.12)";
-      context.fill();
-      context.strokeStyle = "rgba(255, 255, 255, 0.28)";
-      context.lineWidth = 3;
-      context.stroke();
-      context.fillStyle = "rgba(255, 255, 255, 0.86)";
-      context.font = "700 54px Arial";
-      context.textAlign = "center";
-      drawWrappedText(
-        context,
-        product.productTitle,
-        width / 2,
-        710,
-        620,
-        66,
-        4,
-      );
-      context.restore();
-    }
-
-    context.textAlign = "left";
-    context.fillStyle = "#ffffff";
-    context.font = "700 76px Arial";
-    drawWrappedText(context, product.productTitle, 90, 150, 820, 88, 4);
-
-    context.fillStyle = "rgba(255, 255, 255, 0.78)";
-    context.font = "600 34px Arial";
-    context.fillText(product.source, 90, 1100);
-
-    if (product.price) {
-      context.fillStyle = "#ffffff";
-      context.font = "700 58px Arial";
-      context.fillText(product.price, 90, 1170);
-    }
-
-    drawRoundedRect(context, 90, 1260, 360, 112, 56);
-    context.fillStyle = "#ffffff";
-    context.fill();
-    context.fillStyle = "#15151f";
-    context.font = "700 42px Arial";
-    context.textAlign = "center";
-    context.fillText("Shop Now", 270, 1330);
-
-    const outputDirectory = path.join(
-      process.cwd(),
-      "public",
-      "generated-pins",
-    );
-    const fileName = `${product.id}-${Date.now()}-${randomUUID()}.png`;
-    const publicPath = `/generated-pins/${fileName}`;
-
-    await mkdir(outputDirectory, { recursive: true });
-    await writeFile(
-      path.join(outputDirectory, fileName),
-      canvas.toBuffer("image/png"),
-    );
+    const publicPath = await generatePinImageForProduct(product);
 
     await prisma.product.update({
       where: { id: product.id },
@@ -653,5 +812,125 @@ export async function generatePinImage(
     console.error("Pin image generation failed:", error);
 
     return { error: "Unable to generate pin image." };
+  }
+}
+
+export async function processNextProduct(
+  _previousState?: ProcessNextProductState,
+): Promise<ProcessNextProductState> {
+  void _previousState;
+  console.info("Product queue: looking for next product.");
+
+  const candidate = await prisma.product.findFirst({
+    where: {
+      status: {
+        notIn: [ProductStatus.READY, ProductStatus.PUBLISHED],
+      },
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+    select: {
+      id: true,
+      productTitle: true,
+      productImageUrl: true,
+      category: true,
+      source: true,
+      price: true,
+      pinTitle: true,
+      pinDescription: true,
+      pinImageUrl: true,
+      status: true,
+      updatedAt: true,
+    },
+  });
+
+  if (!candidate) {
+    console.info("Product queue: no products need processing.");
+
+    return { success: "No products need processing." };
+  }
+
+  const claim = await prisma.product.updateMany({
+    where: {
+      id: candidate.id,
+      updatedAt: candidate.updatedAt,
+    },
+    data: {
+      status:
+        candidate.status === ProductStatus.NEW ||
+        candidate.status === ProductStatus.FAILED
+          ? ProductStatus.GENERATED
+          : candidate.status,
+    },
+  });
+
+  if (claim.count === 0) {
+    console.info("Product queue: product was already claimed.");
+
+    return { success: "Another process already claimed the next product." };
+  }
+
+  console.info(`Product queue: claimed product ${candidate.id}.`);
+
+  let pinTitle = candidate.pinTitle;
+  let pinDescription = candidate.pinDescription;
+  let pinImageUrl = candidate.pinImageUrl;
+
+  try {
+    if (!pinTitle || !pinDescription) {
+      console.info(`Product queue: generating pin text for ${candidate.id}.`);
+      const generatedPinText = await generatePinTextForProduct(candidate);
+
+      pinTitle = generatedPinText.pinTitle;
+      pinDescription = generatedPinText.pinDescription;
+
+      await prisma.product.update({
+        where: { id: candidate.id },
+        data: {
+          pinTitle,
+          pinDescription,
+          status: ProductStatus.GENERATED,
+        },
+      });
+      console.info(`Product queue: pin text saved for ${candidate.id}.`);
+    } else {
+      console.info(`Product queue: pin text already exists for ${candidate.id}.`);
+    }
+
+    if (!pinImageUrl) {
+      console.info(`Product queue: generating pin image for ${candidate.id}.`);
+      pinImageUrl = await generatePinImageForProduct(candidate);
+
+      await prisma.product.update({
+        where: { id: candidate.id },
+        data: {
+          pinImageUrl,
+        },
+      });
+      console.info(`Product queue: pin image saved for ${candidate.id}.`);
+    } else {
+      console.info(`Product queue: pin image already exists for ${candidate.id}.`);
+    }
+
+    if (pinTitle && pinDescription && pinImageUrl) {
+      await prisma.product.update({
+        where: { id: candidate.id },
+        data: {
+          status: ProductStatus.READY,
+        },
+      });
+      console.info(`Product queue: product ${candidate.id} marked READY.`);
+      console.info("Product marked READY");
+    }
+
+    revalidatePath("/admin/products");
+
+    return { success: `Processed product ${candidate.id}.` };
+  } catch (error) {
+    console.error(`Product queue: processing failed for ${candidate.id}.`, error);
+    await markProductGenerationFailed(candidate.id);
+
+    return { error: `Product processing failed: ${getErrorMessage(error)}` };
   }
 }

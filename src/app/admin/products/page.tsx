@@ -3,27 +3,36 @@ import Image from "next/image";
 import { prisma } from "@/lib/prisma";
 import { GeneratePinImageButton } from "./GeneratePinImageButton";
 import { GeneratePinTextButton } from "./GeneratePinTextButton";
+import { ProcessNextProductButton } from "./ProcessNextProductButton";
 
 export const dynamic = "force-dynamic";
 
 export default async function ProductsPage() {
-  const products = await prisma.product.findMany({
-    orderBy: {
-      createdAt: "desc",
-    },
-    select: {
-      id: true,
-      productTitle: true,
-      source: true,
-      category: true,
-      price: true,
-      status: true,
-      pinTitle: true,
-      pinDescription: true,
-      pinImageUrl: true,
-      createdAt: true,
-    },
-  });
+  const [products, totalProducts, newCount, generatedCount, readyCount, failedCount] =
+    await Promise.all([
+      prisma.product.findMany({
+        orderBy: {
+          createdAt: "desc",
+        },
+        select: {
+          id: true,
+          productTitle: true,
+          source: true,
+          category: true,
+          price: true,
+          status: true,
+          pinTitle: true,
+          pinDescription: true,
+          pinImageUrl: true,
+          createdAt: true,
+        },
+      }),
+      prisma.product.count(),
+      prisma.product.count({ where: { status: "NEW" } }),
+      prisma.product.count({ where: { status: "GENERATED" } }),
+      prisma.product.count({ where: { status: "READY" } }),
+      prisma.product.count({ where: { status: "FAILED" } }),
+    ]);
 
   return (
     <main className="min-h-screen bg-background px-6 py-10">
@@ -38,11 +47,18 @@ export default async function ProductsPage() {
             </h1>
           </div>
           <div className="flex flex-col gap-3 sm:flex-row">
+            <ProcessNextProductButton />
             <Link
               href="/admin/pinterest"
               className="inline-flex h-11 items-center justify-center rounded-md border border-zinc-300 px-5 text-sm font-medium text-foreground transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
             >
               Pinterest boards
+            </Link>
+            <Link
+              href="/admin/products/bulk"
+              className="inline-flex h-11 items-center justify-center rounded-md border border-zinc-300 px-5 text-sm font-medium text-foreground transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            >
+              Bulk Import
             </Link>
             <Link
               href="/admin/products/new"
@@ -51,6 +67,28 @@ export default async function ProductsPage() {
               Add product
             </Link>
           </div>
+        </div>
+
+        <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          {[
+            ["Total", totalProducts],
+            ["NEW", newCount],
+            ["GENERATED", generatedCount],
+            ["READY", readyCount],
+            ["FAILED", failedCount],
+          ].map(([label, value]) => (
+            <div
+              className="rounded-md border border-zinc-200 px-4 py-3 dark:border-zinc-800"
+              key={label}
+            >
+              <p className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
+                {label}
+              </p>
+              <p className="mt-2 text-2xl font-semibold text-foreground">
+                {value}
+              </p>
+            </div>
+          ))}
         </div>
 
         <div className="mt-8 overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-800">
