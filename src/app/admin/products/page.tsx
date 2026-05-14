@@ -13,7 +13,14 @@ type ProductsPageProps = {
 };
 
 const pageSize = 20;
-const statusFilters = ["ALL", "NEW", "GENERATED", "READY", "FAILED"] as const;
+const statusFilters = [
+  "ALL",
+  "NEW",
+  "GENERATED",
+  "READY",
+  "POSTED",
+  "FAILED",
+] as const;
 const sourceFilters = [
   "ALL",
   "Amazon",
@@ -98,8 +105,15 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
   const totalPages = Math.max(Math.ceil(filteredCount / pageSize), 1);
   const currentPage = Math.min(page, totalPages);
 
-  const [products, totalProducts, newCount, generatedCount, readyCount, failedCount] =
-    await Promise.all([
+  const [
+    products,
+    totalProducts,
+    newCount,
+    generatedCount,
+    readyCount,
+    postedCount,
+    failedCount,
+  ] = await Promise.all([
       prisma.product.findMany({
         where,
         orderBy: {
@@ -124,6 +138,7 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
       prisma.product.count({ where: { status: "NEW" } }),
       prisma.product.count({ where: { status: "GENERATED" } }),
       prisma.product.count({ where: { status: "READY" } }),
+      prisma.product.count({ where: { status: "POSTED" } }),
       prisma.product.count({ where: { status: "FAILED" } }),
     ]);
 
@@ -160,6 +175,12 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
               Ready Products
             </Link>
             <Link
+              href="/admin/products/posted"
+              className="inline-flex h-11 items-center justify-center rounded-md border border-zinc-300 px-5 text-sm font-medium text-foreground transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            >
+              Posted Products
+            </Link>
+            <Link
               href="/admin/products/new"
               className="inline-flex h-11 items-center justify-center rounded-md bg-foreground px-5 text-sm font-medium text-background transition-colors hover:opacity-85"
             >
@@ -168,12 +189,13 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
           </div>
         </div>
 
-        <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
           {[
             ["Total", totalProducts],
             ["NEW", newCount],
             ["GENERATED", generatedCount],
             ["READY", readyCount],
+            ["POSTED", postedCount],
             ["FAILED", failedCount],
           ].map(([label, value]) => (
             <div

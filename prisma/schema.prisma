@@ -10,6 +10,7 @@ enum ProductStatus {
   NEW
   GENERATED
   READY
+  POSTED
   PUBLISHED
   FAILED
 }

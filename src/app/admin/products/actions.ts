@@ -57,6 +57,11 @@ export type ProcessNextProductState = {
   error?: string;
 };
 
+export type MarkProductPostedState = {
+  success?: string;
+  error?: string;
+};
+
 export type ProductProcessingSummary = {
   processed: number;
   failed: number;
@@ -320,6 +325,36 @@ export async function updateProduct(
         form: "Unable to save product changes.",
       },
     };
+  }
+}
+
+export async function markProductPosted(
+  _previousState: MarkProductPostedState,
+  formData: FormData,
+): Promise<MarkProductPostedState> {
+  const productId = formData.get("productId")?.toString();
+
+  if (!productId) {
+    return { error: "Product id is required." };
+  }
+
+  try {
+    await prisma.product.update({
+      where: { id: productId },
+      data: {
+        status: ProductStatus.POSTED,
+      },
+    });
+
+    revalidatePath("/admin/products");
+    revalidatePath("/admin/products/ready");
+    revalidatePath("/admin/products/posted");
+
+    return { success: "Product marked as posted." };
+  } catch (error) {
+    console.error("Mark product posted failed:", error);
+
+    return { error: "Unable to mark product as posted." };
   }
 }
 

@@ -2,6 +2,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { CopyField } from "../[id]/export/CopyField";
+import { MarkPostedButton } from "./MarkPostedButton";
 
 export const dynamic = "force-dynamic";
 
@@ -87,12 +88,15 @@ export default async function ReadyProductsPage() {
                           {pinTitle}
                         </h2>
                       </div>
-                      <Link
-                        href={`/admin/products/${product.id}/export`}
-                        className="inline-flex h-10 items-center justify-center rounded-md bg-foreground px-4 text-sm font-medium text-background transition-colors hover:opacity-85"
-                      >
-                        Open Export Page
-                      </Link>
+                      <div className="flex flex-col gap-3">
+                        <Link
+                          href={`/admin/products/${product.id}/export`}
+                          className="inline-flex h-10 items-center justify-center rounded-md bg-foreground px-4 text-sm font-medium text-background transition-colors hover:opacity-85"
+                        >
+                          Open Export Page
+                        </Link>
+                        <MarkPostedButton productId={product.id} />
+                      </div>
                     </div>
 
                     <div className="grid gap-4 lg:grid-cols-2">
