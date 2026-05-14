@@ -73,6 +73,26 @@ npm run prisma:migrate
 npm run prisma:studio
 ```
 
+## External Scheduler
+
+The app exposes a secured cron endpoint for processing one product at a time:
+
+```text
+GET /api/cron/process-products
+POST /api/cron/process-products
+```
+
+Set `CRON_SECRET` in your environment to a long random value. External schedulers must send it as a bearer token:
+
+```bash
+curl -X POST https://your-domain.com/api/cron/process-products \
+  -H "Authorization: Bearer $CRON_SECRET"
+```
+
+If `CRON_SECRET` is missing on the server, the endpoint returns `500`. If the bearer token is missing or incorrect, it returns `401`.
+
+The manual `Process Next Product` button in the admin dashboard does not use this API route and continues to work from the admin page.
+
 ## Project Structure
 
 ```text
