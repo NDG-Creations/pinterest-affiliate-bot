@@ -10,6 +10,13 @@ import { revalidatePath } from "next/cache";
 import OpenAI from "openai";
 import { createClient } from "@supabase/supabase-js";
 import { prisma } from "@/lib/prisma";
+import {
+  detectProductSource,
+  createUrlFallbackTitle,
+  fetchProductMetadata,
+  ProductMetadataError,
+  type ProductMetadata,
+} from "@/lib/product-metadata";
 
 export type ProductFormState = {
   success?: string;
@@ -19,6 +26,20 @@ export type ProductFormState = {
     productTitle?: string;
     form?: string;
   };
+};
+
+export type EditProductFormState = {
+  success?: string;
+  errors?: {
+    productTitle?: string;
+    productUrl?: string;
+    form?: string;
+  };
+};
+
+export type ProductMetadataState = {
+  metadata?: ProductMetadata;
+  error?: string;
 };
 
 export type GeneratePinTextState = {
@@ -81,36 +102,19 @@ type GeneratedPinText = {
 
 type AiProvider = "fallback" | "gemini" | "openai";
 
+type ParsedBulkProductRow = {
+  source: string;
+  productTitle: string;
+  productUrl: string;
+  productImageUrl: string | null;
+  price: string | null;
+  category: string | null;
+};
+
 const getOptionalValue = (formData: FormData, key: string) => {
   const value = formData.get(key)?.toString().trim();
 
   return value ? value : null;
-};
-
-const detectProductSource = (value: string) => {
-  const normalized = value.toLowerCase();
-
-  if (normalized.includes("amazon")) {
-    return "Amazon";
-  }
-
-  if (normalized.includes("flipkart")) {
-    return "Flipkart";
-  }
-
-  if (normalized.includes("meesho")) {
-    return "Meesho";
-  }
-
-  if (normalized.includes("myntra")) {
-    return "Myntra";
-  }
-
-  if (normalized.includes("ajio")) {
-    return "Ajio";
-  }
-
-  return "Unknown";
 };
 
 const isValidUrl = (value: string) => {
@@ -123,7 +127,7 @@ const isValidUrl = (value: string) => {
   }
 };
 
-const parseBulkProductRow = (row: string) => {
+const parseBulkProductRow = (row: string): ParsedBulkProductRow | null => {
   const parts = row.split("|").map((part) => part.trim());
 
   if (parts.length >= 3) {
@@ -134,9 +138,10 @@ const parseBulkProductRow = (row: string) => {
     }
 
     return {
-      source: source || detectProductSource(productUrl),
+      source: source || detectProductSource(productUrl) || "Unknown",
       productTitle,
       productUrl,
+      productImageUrl: null,
       price: price || null,
       category: category || null,
     };
@@ -149,13 +154,40 @@ const parseBulkProductRow = (row: string) => {
   }
 
   return {
-    source: detectProductSource(productUrl),
-    productTitle: productUrl,
+    source: detectProductSource(productUrl) || "Unknown",
+    productTitle: createUrlFallbackTitle(productUrl),
     productUrl,
+    productImageUrl: null,
     price: null,
     category: null,
   };
 };
+
+const getProductMetadataErrorMessage = (error: unknown) => {
+  if (error instanceof ProductMetadataError) {
+    return error.message;
+  }
+
+  return "Product metadata is unavailable for this page.";
+};
+
+export async function fetchProductMetadataForForm(
+  productUrl: string,
+): Promise<ProductMetadataState> {
+  if (!productUrl || !isValidUrl(productUrl)) {
+    return { error: "Enter a valid product URL first." };
+  }
+
+  try {
+    return {
+      metadata: await fetchProductMetadata(productUrl),
+    };
+  } catch (error) {
+    return {
+      error: getProductMetadataErrorMessage(error),
+    };
+  }
+}
 
 export async function createProduct(
   _previousState: ProductFormState,
@@ -222,6 +254,75 @@ export async function createProduct(
   }
 }
 
+export async function updateProduct(
+  _previousState: EditProductFormState,
+  formData: FormData,
+): Promise<EditProductFormState> {
+  const productId = formData.get("productId")?.toString() ?? "";
+  const productTitle = formData.get("productTitle")?.toString().trim() ?? "";
+  const productUrl = formData.get("productUrl")?.toString().trim() ?? "";
+
+  const errors: EditProductFormState["errors"] = {};
+
+  if (!productTitle) {
+    errors.productTitle = "Product title is required.";
+  }
+
+  if (!productUrl) {
+    errors.productUrl = "Product URL is required.";
+  }
+
+  if (!productId) {
+    errors.form = "Product id is missing.";
+  }
+
+  if (Object.keys(errors).length > 0) {
+    return { errors };
+  }
+
+  const existingProduct = await prisma.product.findUnique({
+    where: { productUrl },
+    select: { id: true },
+  });
+
+  if (existingProduct && existingProduct.id !== productId) {
+    return {
+      errors: {
+        productUrl: "A different product already uses this URL.",
+      },
+    };
+  }
+
+  try {
+    await prisma.product.update({
+      where: { id: productId },
+      data: {
+        productTitle,
+        productUrl,
+        affiliateUrl: getOptionalValue(formData, "affiliateUrl"),
+        price: getOptionalValue(formData, "productPrice"),
+        category: getOptionalValue(formData, "category"),
+        pinTitle: getOptionalValue(formData, "pinTitle"),
+        pinDescription: getOptionalValue(formData, "pinDescription"),
+        pinImageUrl: getOptionalValue(formData, "pinImageUrl"),
+      },
+    });
+
+    revalidatePath("/admin/products");
+    revalidatePath(`/admin/products/${productId}/edit`);
+
+    return { success: "Product changes saved." };
+  } catch (error) {
+    console.error("Product update failed:", error);
+
+    return {
+      errors: {
+        form: "Unable to save product changes.",
+      },
+    };
+  }
+}
+
 export async function bulkImportProducts(
   _previousState: BulkImportProductsState,
   formData: FormData,
@@ -242,11 +343,31 @@ export async function bulkImportProducts(
   const seenUrls = new Set<string>();
 
   for (const row of rows) {
-    const parsed = parseBulkProductRow(row);
+    let parsed = parseBulkProductRow(row);
 
     if (!parsed) {
       failedRowsCount += 1;
       continue;
+    }
+
+    if (!row.includes("|")) {
+      try {
+        const metadata = await fetchProductMetadata(parsed.productUrl);
+
+        parsed = {
+          ...parsed,
+          source: metadata.source,
+          productTitle: metadata.productTitle,
+          price: metadata.price,
+          category: metadata.category,
+          productImageUrl: metadata.productImageUrl,
+        };
+      } catch (error) {
+        console.info(
+          "Bulk import metadata extraction skipped:",
+          getProductMetadataErrorMessage(error),
+        );
+      }
     }
 
     if (seenUrls.has(parsed.productUrl)) {
@@ -262,6 +383,7 @@ export async function bulkImportProducts(
           source: parsed.source,
           productUrl: parsed.productUrl,
           productTitle: parsed.productTitle,
+          productImageUrl: parsed.productImageUrl,
           price: parsed.price,
           category: parsed.category,
           status: ProductStatus.NEW,
@@ -489,6 +611,7 @@ const saveGeneratedPinText = async (
   });
 
   revalidatePath("/admin/products");
+  revalidatePath(`/admin/products/${productId}/edit`);
 };
 
 const markProductGenerationFailed = async (productId: string) => {
@@ -861,6 +984,7 @@ export async function generatePinImage(
     });
 
     revalidatePath("/admin/products");
+    revalidatePath(`/admin/products/${product.id}/edit`);
 
     return { success: "Pin image generated." };
   } catch (error) {

@@ -1,8 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useActionState, useEffect, useRef } from "react";
-import { createProduct, type ProductFormState } from "../actions";
+import { useActionState, useEffect, useRef, useState, useTransition } from "react";
+import {
+  createProduct,
+  fetchProductMetadataForForm,
+  type ProductFormState,
+} from "../actions";
 
 const initialState: ProductFormState = {};
 
@@ -24,13 +28,61 @@ export function ProductForm() {
     createProduct,
     initialState,
   );
+  const [metadataMessage, setMetadataMessage] = useState<string | null>(null);
+  const [isFetchingMetadata, startMetadataTransition] = useTransition();
   const formRef = useRef<HTMLFormElement>(null);
+  const sourceRef = useRef<HTMLInputElement>(null);
+  const productUrlRef = useRef<HTMLInputElement>(null);
+  const productTitleRef = useRef<HTMLInputElement>(null);
+  const productImageUrlRef = useRef<HTMLInputElement>(null);
+  const priceRef = useRef<HTMLInputElement>(null);
+  const categoryRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (state.success) {
       formRef.current?.reset();
     }
   }, [state.success]);
+
+  const fetchDetails = () => {
+    const productUrl = productUrlRef.current?.value.trim() ?? "";
+
+    setMetadataMessage(null);
+    startMetadataTransition(async () => {
+      const result = await fetchProductMetadataForForm(productUrl);
+
+      if (result.error) {
+        setMetadataMessage(
+          `${result.error} Some websites may block automatic metadata. Please manually enter title/image if needed.`,
+        );
+        return;
+      }
+
+      if (!result.metadata) {
+        setMetadataMessage(
+          "Product metadata is unavailable for this page. Some websites may block automatic metadata. Please manually enter title/image if needed.",
+        );
+        return;
+      }
+
+      sourceRef.current!.value = result.metadata.source;
+      productTitleRef.current!.value = result.metadata.productTitle;
+
+      if (result.metadata.productImageUrl && productImageUrlRef.current) {
+        productImageUrlRef.current.value = result.metadata.productImageUrl;
+      }
+
+      if (result.metadata.price && priceRef.current) {
+        priceRef.current.value = result.metadata.price;
+      }
+
+      if (result.metadata.category && categoryRef.current) {
+        categoryRef.current.value = result.metadata.category;
+      }
+
+      setMetadataMessage("Product details filled from page metadata.");
+    });
+  };
 
   return (
     <form ref={formRef} action={formAction} className="mt-8 space-y-6">
@@ -53,6 +105,7 @@ export function ProductForm() {
             className={fieldClassName}
             name="source"
             placeholder="Amazon"
+            ref={sourceRef}
             required
           />
           <FieldError message={state.errors?.source} />
@@ -64,21 +117,40 @@ export function ProductForm() {
             className={fieldClassName}
             name="category"
             placeholder="Home office"
+            ref={categoryRef}
           />
         </label>
       </div>
 
-      <label className={labelClassName}>
-        Product URL
-        <input
-          className={fieldClassName}
-          name="productUrl"
-          placeholder="https://example.com/product"
-          required
-          type="url"
-        />
-        <FieldError message={state.errors?.productUrl} />
-      </label>
+      <div>
+        <label className={labelClassName}>
+          Product URL
+          <input
+            className={fieldClassName}
+            name="productUrl"
+            placeholder="https://example.com/product"
+            ref={productUrlRef}
+            required
+            type="url"
+          />
+          <FieldError message={state.errors?.productUrl} />
+        </label>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center">
+          <button
+            className="inline-flex h-10 items-center justify-center rounded-md border border-zinc-300 px-4 text-sm font-medium text-foreground transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            disabled={isFetchingMetadata}
+            onClick={fetchDetails}
+            type="button"
+          >
+            {isFetchingMetadata ? "Fetching..." : "Fetch Product Details"}
+          </button>
+          {metadataMessage ? (
+            <p className="text-sm text-zinc-600 dark:text-zinc-400">
+              {metadataMessage}
+            </p>
+          ) : null}
+        </div>
+      </div>
 
       <label className={labelClassName}>
         Affiliate URL
@@ -96,6 +168,7 @@ export function ProductForm() {
           className={fieldClassName}
           name="productTitle"
           placeholder="Adjustable desk lamp"
+          ref={productTitleRef}
           required
         />
         <FieldError message={state.errors?.productTitle} />
@@ -108,13 +181,19 @@ export function ProductForm() {
             className={fieldClassName}
             name="productImageUrl"
             placeholder="https://example.com/image.jpg"
+            ref={productImageUrlRef}
             type="url"
           />
         </label>
 
         <label className={labelClassName}>
           Price
-          <input className={fieldClassName} name="price" placeholder="$49.99" />
+          <input
+            className={fieldClassName}
+            name="price"
+            placeholder="$49.99"
+            ref={priceRef}
+          />
         </label>
       </div>
 
