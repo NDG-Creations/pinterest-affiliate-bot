@@ -61,6 +61,12 @@ export default async function ProductsPage() {
               Bulk Import
             </Link>
             <Link
+              href="/admin/products/ready"
+              className="inline-flex h-11 items-center justify-center rounded-md border border-zinc-300 px-5 text-sm font-medium text-foreground transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            >
+              Ready Products
+            </Link>
+            <Link
               href="/admin/products/new"
               className="inline-flex h-11 items-center justify-center rounded-md bg-foreground px-5 text-sm font-medium text-background transition-colors hover:opacity-85"
             >
