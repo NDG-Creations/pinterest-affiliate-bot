@@ -1,5 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
+import { ProductStatus, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { GeneratePinImageButton } from "./GeneratePinImageButton";
 import { GeneratePinTextButton } from "./GeneratePinTextButton";
@@ -7,13 +8,105 @@ import { ProcessNextProductButton } from "./ProcessNextProductButton";
 
 export const dynamic = "force-dynamic";
 
-export default async function ProductsPage() {
+type ProductsPageProps = {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+};
+
+const pageSize = 20;
+const statusFilters = ["ALL", "NEW", "GENERATED", "READY", "FAILED"] as const;
+const sourceFilters = [
+  "ALL",
+  "Amazon",
+  "Flipkart",
+  "Meesho",
+  "Myntra",
+  "Ajio",
+] as const;
+const sortOptions = ["newest", "oldest"] as const;
+
+const getQueryValue = (
+  searchParams: Record<string, string | string[] | undefined>,
+  key: string,
+) => {
+  const value = searchParams[key];
+
+  return Array.isArray(value) ? value[0] : value;
+};
+
+const getHrefWithPage = (
+  searchParams: Record<string, string | string[] | undefined>,
+  page: number,
+) => {
+  const params = new URLSearchParams();
+
+  for (const [key, value] of Object.entries(searchParams)) {
+    const normalizedValue = Array.isArray(value) ? value[0] : value;
+
+    if (normalizedValue && key !== "page") {
+      params.set(key, normalizedValue);
+    }
+  }
+
+  if (page > 1) {
+    params.set("page", page.toString());
+  }
+
+  const queryString = params.toString();
+
+  return queryString ? `/admin/products?${queryString}` : "/admin/products";
+};
+
+export default async function ProductsPage({ searchParams }: ProductsPageProps) {
+  const resolvedSearchParams = await searchParams;
+  const search = getQueryValue(resolvedSearchParams, "search")?.trim() ?? "";
+  const status = getQueryValue(resolvedSearchParams, "status") ?? "ALL";
+  const source = getQueryValue(resolvedSearchParams, "source") ?? "ALL";
+  const sort = getQueryValue(resolvedSearchParams, "sort") ?? "newest";
+  const page = Math.max(
+    Number.parseInt(getQueryValue(resolvedSearchParams, "page") ?? "1", 10) || 1,
+    1,
+  );
+  const normalizedStatus = statusFilters.includes(
+    status as (typeof statusFilters)[number],
+  )
+    ? status
+    : "ALL";
+  const normalizedSource = sourceFilters.includes(
+    source as (typeof sourceFilters)[number],
+  )
+    ? source
+    : "ALL";
+  const normalizedSort = sortOptions.includes(sort as (typeof sortOptions)[number])
+    ? sort
+    : "newest";
+  const where: Prisma.ProductWhereInput = {
+    ...(search
+      ? {
+          OR: [
+            { productTitle: { contains: search, mode: "insensitive" } },
+            { source: { contains: search, mode: "insensitive" } },
+            { category: { contains: search, mode: "insensitive" } },
+          ],
+        }
+      : {}),
+    ...(normalizedStatus !== "ALL"
+      ? { status: normalizedStatus as ProductStatus }
+      : {}),
+    ...(normalizedSource !== "ALL" ? { source: normalizedSource } : {}),
+  };
+  const filteredCount = await prisma.product.count({ where });
+  const totalPages = Math.max(Math.ceil(filteredCount / pageSize), 1);
+  const currentPage = Math.min(page, totalPages);
+
   const [products, totalProducts, newCount, generatedCount, readyCount, failedCount] =
     await Promise.all([
       prisma.product.findMany({
+        where,
         orderBy: {
-          createdAt: "desc",
+          createdAt: normalizedSort === "oldest" ? "asc" : "desc",
         },
+        skip: (currentPage - 1) * pageSize,
+        take: pageSize,
         select: {
           id: true,
           productTitle: true,
@@ -95,6 +188,82 @@ export default async function ProductsPage() {
               </p>
             </div>
           ))}
+        </div>
+
+        <form
+          action="/admin/products"
+          className="mt-8 grid gap-4 rounded-md border border-zinc-200 p-4 dark:border-zinc-800 lg:grid-cols-[1fr_180px_180px_180px_auto]"
+        >
+          <label className="block text-sm font-medium text-zinc-800 dark:text-zinc-200">
+            Search
+            <input
+              className="mt-2 block h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors focus:border-zinc-950 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 dark:focus:border-zinc-300"
+              defaultValue={search}
+              name="search"
+              placeholder="Title, source, category"
+            />
+          </label>
+
+          <label className="block text-sm font-medium text-zinc-800 dark:text-zinc-200">
+            Status
+            <select
+              className="mt-2 block h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors focus:border-zinc-950 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 dark:focus:border-zinc-300"
+              defaultValue={normalizedStatus}
+              name="status"
+            >
+              {statusFilters.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block text-sm font-medium text-zinc-800 dark:text-zinc-200">
+            Source
+            <select
+              className="mt-2 block h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors focus:border-zinc-950 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 dark:focus:border-zinc-300"
+              defaultValue={normalizedSource}
+              name="source"
+            >
+              {sourceFilters.map((item) => (
+                <option key={item} value={item}>
+                  {item}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block text-sm font-medium text-zinc-800 dark:text-zinc-200">
+            Sort
+            <select
+              className="mt-2 block h-10 w-full rounded-md border border-zinc-300 bg-white px-3 text-sm text-zinc-950 outline-none transition-colors focus:border-zinc-950 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-50 dark:focus:border-zinc-300"
+              defaultValue={normalizedSort}
+              name="sort"
+            >
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+            </select>
+          </label>
+
+          <div className="flex items-end gap-3">
+            <button
+              className="inline-flex h-10 items-center justify-center rounded-md bg-foreground px-5 text-sm font-medium text-background transition-colors hover:opacity-85"
+              type="submit"
+            >
+              Apply
+            </button>
+            <Link
+              className="inline-flex h-10 items-center justify-center rounded-md border border-zinc-300 px-4 text-sm font-medium text-foreground transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+              href="/admin/products"
+            >
+              Reset
+            </Link>
+          </div>
+        </form>
+
+        <div className="mt-4 text-sm text-zinc-600 dark:text-zinc-400">
+          Showing {products.length} of {filteredCount} matching products.
         </div>
 
         <div className="mt-8 overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-800">
@@ -182,6 +351,30 @@ export default async function ProductsPage() {
               </p>
             </div>
           )}
+        </div>
+
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+            Page {currentPage} of {totalPages}
+          </p>
+          <div className="flex gap-3">
+            {currentPage > 1 ? (
+              <Link
+                className="inline-flex h-10 items-center justify-center rounded-md border border-zinc-300 px-4 text-sm font-medium text-foreground transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+                href={getHrefWithPage(resolvedSearchParams, currentPage - 1)}
+              >
+                Previous
+              </Link>
+            ) : null}
+            {currentPage < totalPages ? (
+              <Link
+                className="inline-flex h-10 items-center justify-center rounded-md border border-zinc-300 px-4 text-sm font-medium text-foreground transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-900"
+                href={getHrefWithPage(resolvedSearchParams, currentPage + 1)}
+              >
+                Next
+              </Link>
+            ) : null}
+          </div>
         </div>
       </section>
     </main>
