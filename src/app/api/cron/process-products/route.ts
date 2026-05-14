@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { processNextProduct } from "@/app/admin/products/actions";
+import { processProductBatch } from "@/app/admin/products/actions";
 
 export const dynamic = "force-dynamic";
 
@@ -19,10 +19,9 @@ const processCronRequest = async (request: Request) => {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
 
-  const result = await processNextProduct();
-  const status = result.error ? 500 : 200;
+  const result = await processProductBatch(3);
 
-  return NextResponse.json(result, { status });
+  return NextResponse.json(result);
 };
 
 export async function GET(request: Request) {

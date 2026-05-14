@@ -35,6 +35,12 @@ export type ProcessNextProductState = {
   error?: string;
 };
 
+export type ProductProcessingSummary = {
+  processed: number;
+  failed: number;
+  skipped: number;
+};
+
 export type BulkImportProductsState = {
   importedCount?: number;
   skippedDuplicatesCount?: number;
@@ -57,6 +63,15 @@ type ProductPinImageInput = {
   source: string;
   price: string | null;
 };
+
+type ProductQueueCandidate = ProductPinInput &
+  ProductPinImageInput & {
+    pinTitle: string | null;
+    pinDescription: string | null;
+    pinImageUrl: string | null;
+    status: ProductStatus;
+    updatedAt: Date;
+  };
 
 type GeneratedPinText = {
   pinTitle: string;
@@ -851,6 +866,26 @@ export async function processNextProduct(
     return { success: "No products need processing." };
   }
 
+  const result = await processProductCandidate(candidate);
+
+  if (result === "failed") {
+    return { error: `Product processing failed: ${candidate.id}` };
+  }
+
+  if (result === "skipped") {
+    return { success: "Another process already claimed the next product." };
+  }
+
+  revalidatePath("/admin/products");
+
+  return { success: `Processed product ${candidate.id}.` };
+}
+
+const processProductCandidate = async (
+  candidate: ProductQueueCandidate,
+): Promise<"processed" | "failed" | "skipped"> => {
+  console.info(`Product queue: checking product ${candidate.id}.`);
+
   const claim = await prisma.product.updateMany({
     where: {
       id: candidate.id,
@@ -866,9 +901,9 @@ export async function processNextProduct(
   });
 
   if (claim.count === 0) {
-    console.info("Product queue: product was already claimed.");
+    console.info(`Product queue: product ${candidate.id} was already claimed.`);
 
-    return { success: "Another process already claimed the next product." };
+    return "skipped";
   }
 
   console.info(`Product queue: claimed product ${candidate.id}.`);
@@ -924,13 +959,75 @@ export async function processNextProduct(
       console.info("Product marked READY");
     }
 
-    revalidatePath("/admin/products");
-
-    return { success: `Processed product ${candidate.id}.` };
+    return "processed";
   } catch (error) {
     console.error(`Product queue: processing failed for ${candidate.id}.`, error);
     await markProductGenerationFailed(candidate.id);
 
-    return { error: `Product processing failed: ${getErrorMessage(error)}` };
+    return "failed";
   }
+};
+
+export async function processProductBatch(
+  limit = 3,
+): Promise<ProductProcessingSummary> {
+  console.info(`Product queue: processing up to ${limit} products.`);
+
+  const candidates = await prisma.product.findMany({
+    where: {
+      status: {
+        notIn: [ProductStatus.READY, ProductStatus.PUBLISHED],
+      },
+    },
+    orderBy: {
+      createdAt: "asc",
+    },
+    take: limit,
+    select: {
+      id: true,
+      productTitle: true,
+      productImageUrl: true,
+      category: true,
+      source: true,
+      price: true,
+      pinTitle: true,
+      pinDescription: true,
+      pinImageUrl: true,
+      status: true,
+      updatedAt: true,
+    },
+  });
+
+  const summary: ProductProcessingSummary = {
+    processed: 0,
+    failed: 0,
+    skipped: 0,
+  };
+
+  if (candidates.length === 0) {
+    console.info("Product queue: no products need batch processing.");
+
+    return summary;
+  }
+
+  for (const candidate of candidates) {
+    const result = await processProductCandidate(candidate);
+
+    if (result === "processed") {
+      summary.processed += 1;
+    }
+
+    if (result === "failed") {
+      summary.failed += 1;
+    }
+
+    if (result === "skipped") {
+      summary.skipped += 1;
+    }
+  }
+
+  console.info("Product queue: batch summary.", summary);
+  revalidatePath("/admin/products");
+
+  return summary;
 }
