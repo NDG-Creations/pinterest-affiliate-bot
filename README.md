@@ -75,7 +75,7 @@ npm run prisma:studio
 
 ## External Scheduler
 
-The app exposes a secured cron endpoint for processing one product at a time:
+The app exposes a secured cron endpoint for processing products:
 
 ```text
 GET /api/cron/process-products
@@ -92,6 +92,22 @@ curl -X POST https://your-domain.com/api/cron/process-products \
 If `CRON_SECRET` is missing on the server, the endpoint returns `500`. If the bearer token is missing or incorrect, it returns `401`.
 
 The manual `Process Next Product` button in the admin dashboard does not use this API route and continues to work from the admin page.
+
+## Supabase Storage
+
+Generated pin images are uploaded to Supabase Storage when these environment variables are configured:
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=""
+SUPABASE_SERVICE_ROLE_KEY=""
+SUPABASE_STORAGE_BUCKET="pin-images"
+```
+
+Create a Supabase Storage bucket named `pin-images`, or set `SUPABASE_STORAGE_BUCKET` to the bucket you want to use. The app uploads PNG files under `generated-pins/` and saves the public URL in `Product.pinImageUrl`.
+
+Use a server-only Supabase service role key for `SUPABASE_SERVICE_ROLE_KEY`. Do not expose it in client-side code.
+
+If the Supabase variables are missing, the app keeps the local development fallback and writes generated images to `public/generated-pins`.
 
 ## Project Structure
 

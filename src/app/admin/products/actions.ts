@@ -8,6 +8,7 @@ import type { CanvasRenderingContext2D } from "canvas";
 import { ProductStatus } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import OpenAI from "openai";
+import { createClient } from "@supabase/supabase-js";
 import { prisma } from "@/lib/prisma";
 
 export type ProductFormState = {
@@ -652,6 +653,49 @@ const drawProductImage = async (
   }
 };
 
+const savePinImageBuffer = async (fileName: string, pngBuffer: Buffer) => {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const supabaseStorageBucket =
+    process.env.SUPABASE_STORAGE_BUCKET || "pin-images";
+
+  if (supabaseUrl && supabaseServiceRoleKey && supabaseStorageBucket) {
+    const supabase = createClient(supabaseUrl, supabaseServiceRoleKey, {
+      auth: {
+        persistSession: false,
+      },
+    });
+    const storagePath = `generated-pins/${fileName}`;
+    const { error } = await supabase.storage
+      .from(supabaseStorageBucket)
+      .upload(storagePath, pngBuffer, {
+        contentType: "image/png",
+        upsert: true,
+      });
+
+    if (error) {
+      throw new Error(`Supabase image upload failed: ${error.message}`);
+    }
+
+    const { data } = supabase.storage
+      .from(supabaseStorageBucket)
+      .getPublicUrl(storagePath);
+
+    console.info("Pin image uploaded to Supabase Storage.");
+
+    return data.publicUrl;
+  }
+
+  const outputDirectory = path.join(process.cwd(), "public", "generated-pins");
+  const publicPath = `/generated-pins/${fileName}`;
+
+  await mkdir(outputDirectory, { recursive: true });
+  await writeFile(path.join(outputDirectory, fileName), pngBuffer);
+  console.info("Pin image saved to local public/generated-pins.");
+
+  return publicPath;
+};
+
 const generatePinImageForProduct = async (product: ProductPinImageInput) => {
   const { createCanvas } = await import("canvas");
   const width = 1000;
@@ -733,13 +777,9 @@ const generatePinImageForProduct = async (product: ProductPinImageInput) => {
   context.textAlign = "center";
   context.fillText("Shop Now", 270, 1330);
 
-  const outputDirectory = path.join(process.cwd(), "public", "generated-pins");
   const fileName = `${product.id}-${Date.now()}-${randomUUID()}.png`;
-  const publicPath = `/generated-pins/${fileName}`;
-
-  await mkdir(outputDirectory, { recursive: true });
-  await writeFile(
-    path.join(outputDirectory, fileName),
+  const publicPath = await savePinImageBuffer(
+    fileName,
     canvas.toBuffer("image/png"),
   );
 
